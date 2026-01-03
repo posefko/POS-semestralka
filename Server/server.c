@@ -1,59 +1,140 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #include "../common/protocol.h"
+#include "game.h"
 
-int main() {
-    // 1?? Vytvorenie TCP socketu
-    // AF_INET = IPv4, SOCK_STREAM = TCP
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        perror("socket");
-        return 1;
-    }
+/*
+  Context pre receive thread:
+  - client_fd: socket na klienta
+  - g: pointer na zdieæan˝ hern˝ stav
+*/
+typedef struct {
+    int client_fd;
+    GameState* g;
+} ClientCtx;
 
-    // 2?? Nastavenie adresy servera
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;           // IPv4
-    addr.sin_port = htons(SERVER_PORT);  // port (v network byte order)
-    addr.sin_addr.s_addr = INADDR_ANY;   // poË˙vaj na vöetk˝ch rozhraniach
-
-    // 3?? Priradenie adresy socketu (bind)
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        return 1;
-    }
-
-    // 4?? Server zaËne poË˙vaù (max 1 klient zatiaæ)
-    listen(server_fd, 1);
-    printf("Server listening on port %d\n", SERVER_PORT);
-
-    // 5?? »akanie na pripojenie klienta
-    int client_fd = accept(server_fd, NULL, NULL);
-    printf("Client connected\n");
-
-    // 6?? KomunikaËn˝ cyklus servera
-    char buffer[256];
+/*
+  RECEIVE thread:
+  - ËÌta spr·vy od klienta (MOVE/QUIT)
+  - pri MOVE nastavÌ smer v GameState
+  - pri QUIT ukonËÌ hru
+*/
+static void* recv_loop(void* arg) {
+    ClientCtx* ctx = (ClientCtx*)arg;
+    char buf[256];
 
     while (1) {
-        // Prijatie spr·vy od klienta
-        int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        int r = (int)recv(ctx->client_fd, buf, sizeof(buf) - 1, 0);
+        if (r <= 0) break;     // klient sa odpojil
+        buf[r] = '\0';
 
-        // Ak klient zavrel spojenie
-        if (n <= 0) break;
+        // OËak·vame napr. "MOVE w\n"
+        if (strncmp(buf, "MOVE ", 5) == 0) {
+            char dir = buf[5];
 
-        buffer[n] = '\0'; // ukonËenie stringu
-        printf("Received from client: %s", buffer);
+            // zamkneme mutex, lebo game loop mÙûe pr·ve robiù tick
+            pthread_mutex_lock(&ctx->g->mtx);
+            game_set_dir(ctx->g, dir);
+            pthread_mutex_unlock(&ctx->g->mtx);
 
-        // Zatiaæ server len odpovie "OK"
-        send(client_fd, "MSG OK\n", 7, 0);
+        }
+        else if (strncmp(buf, "QUIT", 4) == 0) {
+            // korektnÈ ukonËenie hry
+            pthread_mutex_lock(&ctx->g->mtx);
+            ctx->g->running = 0;
+            pthread_mutex_unlock(&ctx->g->mtx);
+            break;
+        }
     }
 
-    // 7?? Upratanie
-    close(client_fd);
+    // zavri socket klienta (server potom skonËÌ v main loop)
+    close(ctx->client_fd);
+    return NULL;
+}
+
+/*
+  VytvorÌ server socket a zaËne poË˙vaù.
+*/
+static int start_server(void) {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) { perror("socket"); exit(1); }
+
+    // aby port nezostal "busy" pri reötarte
+    int yes = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(SERVER_PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("bind"); exit(1); }
+    if (listen(server_fd, 1) < 0) { perror("listen"); exit(1); }
+
+    return server_fd;
+}
+
+int main(void) {
+    int server_fd = start_server();
+    printf("Server listening on port %d\n", SERVER_PORT);
+
+    // Krok 2: st·le len 1 klient (najjednoduchöie)
+    int client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd < 0) { perror("accept"); return 1; }
+    printf("Client connected\n");
+
+    // inicializuj hern˝ stav
+    GameState g;
+    game_init(&g);
+
+    // spusti receive thread (input od klienta)
+    ClientCtx ctx = { .client_fd = client_fd, .g = &g };
+    pthread_t th_recv;
+    pthread_create(&th_recv, NULL, recv_loop, &ctx);
+
+    // buffer na ASCII mapu
+    char out[8192];
+
+    /*
+      GAME LOOP (v main threade):
+      - kaûd˝ch ~150ms spravÌ tick
+      - vyrenderuje mapu
+      - poöle ju klientovi
+    */
+    while (1) {
+        pthread_mutex_lock(&g.mtx);
+
+        if (!g.running) {
+            // jednoduchÈ ozn·menie konca
+            int n = snprintf(out, sizeof(out), "MAP\nGAME OVER\nENDMAP\n");
+            pthread_mutex_unlock(&g.mtx);
+
+            send(client_fd, out, (size_t)n, 0);
+            break;
+        }
+
+        // posuÚ hru a vyrenderuj mapu
+        game_step(&g);
+        int n = game_render_map(&g, out, (int)sizeof(out));
+
+        pthread_mutex_unlock(&g.mtx);
+
+        // poöli mapu klientovi
+        send(client_fd, out, (size_t)n, 0);
+
+        // malÈ oneskorenie (plynulosù)
+        usleep(150 * 1000);
+    }
+
+    pthread_join(th_recv, NULL);
     close(server_fd);
     return 0;
 }
