@@ -5,6 +5,12 @@
 
 #include "../common/protocol.h"
 
+
+static void clear_screen(void) {
+    // ANSI clear (frios2 terminal)
+    write(STDOUT_FILENO, "\033[H\033[J", 6);
+}
+
 int main() {
     // 1️⃣ Vytvorenie socketu
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -23,27 +29,24 @@ int main() {
         return 1;
     }
 
-    char buffer[256];
+    char buffer[4096];
 
-    // 4️⃣ Hlavná slučka klienta
     while (1) {
-        // Načítanie vstupu od používateľa
+        // vstup od hráča
         printf("Enter command (MOVE w / QUIT): ");
         fgets(buffer, sizeof(buffer), stdin);
 
-        // Poslanie správy serveru
         send(sock, buffer, strlen(buffer), 0);
 
-        // Prijatie odpovede od servera
+        // príjem mapy zo servera
         int n = recv(sock, buffer, sizeof(buffer) - 1, 0);
         if (n <= 0) break;
 
         buffer[n] = '\0';
-        printf("Server says: %s", buffer);
 
-        // Ak by sme chceli skončiť
-        if (strncmp(buffer, "MSG", 3) == 0 && strstr(buffer, "QUIT"))
-            break;
+        clear_screen();
+        printf("%s", buffer);
+        fflush(stdout);
     }
 
     // 5️⃣ Zatvorenie spojenia
