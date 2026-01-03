@@ -7,8 +7,9 @@ all: $(BIN)/server $(BIN)/client
 $(BIN):
 	mkdir -p $(BIN)
 
-$(BIN)/server: server/server.c | $(BIN)
-	$(CC) $(CFLAGS) -Icommon server/server.c -o $@
+$(BIN)/server: server/server.c server/game.c server/game.h | $(BIN)
+	$(CC) $(CFLAGS) -Icommon -Iserver server/server.c server/game.c -o $@
+
 
 $(BIN)/client: client/client.c | $(BIN)
 	$(CC) $(CFLAGS) -Icommon client/client.c -o $@
