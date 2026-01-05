@@ -1,20 +1,29 @@
 #pragma once
 #include <pthread.h>
+#include <time.h>
 
 /*
   Rozmery mapy (ASCII).
-  Server bude posiela ROWS riadkov po COLS znakov.
+  Server bude posielaï¿½ ROWS riadkov po COLS znakov.
 */
 #define ROWS 20
 #define COLS 40
 
 /*
-  Max dåka hada – v tomto kroku pouívame statické pole,
-  aby sme nemuseli rieši malloc/free (jednoduchšie, menej bugov).
+  Typ sveta: so stenami alebo wrap-around (bez prekÃ¡Å¾ok)
+*/
+typedef enum {
+    WORLD_WALLS,      // svet so stenami (nÃ¡raz do steny = GAME OVER)
+    WORLD_WRAP        // svet bez prekÃ¡Å¾ok (wrap-around)
+} WorldType;
+
+/*
+  Max dï¿½ka hada ï¿½ v tomto kroku pouï¿½ï¿½vame statickï¿½ pole,
+  aby sme nemuseli rieï¿½iï¿½ malloc/free (jednoduchï¿½ie, menej bugov).
 */
 #define MAX_SNAKE 256
 
-// Jednoduchá pozícia v mrieke
+// Jednoduchï¿½ pozï¿½cia v mrieï¿½ke
 typedef struct {
     int x, y;
 } Pos;
@@ -22,7 +31,7 @@ typedef struct {
 /*
   Snake = "objekt" v C (struct).
   - parts[]: segmenty hada (0 je hlava)
-  - len: aktuálna dåka
+  - len: aktuï¿½lna dï¿½ka
   - dir: smer pohybu ('w','a','s','d')
   - alive/running: stav hry
 */
@@ -34,29 +43,37 @@ typedef struct {
 } Snake;
 
 /*
-  GameState = kompletnı stav hry na SERVERI.
-  Klient nemá logiku hry, iba zobrazuje text.
+  GameState = kompletnï¿½ stav hry na SERVERI.
+  Klient nemï¿½ logiku hry, iba zobrazuje text.
 */
 typedef struct {
-    char board[ROWS][COLS];  // vısledná vykres¾ovaná mrieka (server ju skladá)
-    Snake snake;             // zatia¾ 1 had
+    char board[ROWS][COLS];  // vï¿½slednï¿½ vykresï¿½ovanï¿½ mrieï¿½ka (server ju skladï¿½)
+    Snake snake;             // zatiaï¿½ 1 had
     Pos fruit;               // ovocie
-    int running;             // 1 = hra beí, 0 = koniec
-    pthread_mutex_t mtx;     // mutex chráni celı stav (dir, posun, ovocie, running)
+    int running;             // 1 = hra beï¿½ï¿½, 0 = koniec
+    int score;              // aktualne skore
+    WorldType world;         // typ sveta (WORLD_WALLS / WORLD_WRAP)
+    int paused;              // 1 = hra je pozastavenï¿½, 0 = beï¿½
+    int time_limit_sec;      // limit ï¿½asu (0 = nekoneï¿½nï¿½ reï¿½im)
+    time_t start_time;       // ï¿½as zaï¿½iatku hry
+    time_t pause_start;      // ï¿½as zaï¿½iatku pauzy (pre poï¿½ï¿½tanie ï¿½asu bez pauzy)
+    int total_pause_time;    // celkovï¿½ ï¿½as strï¿½venï¿½ v pauze
+    pthread_mutex_t mtx;     // mutex chrï¿½ni celï¿½ stav (dir, posun, ovocie, running)
 } GameState;
 
-// Inicializácia hry (nastaví hada, ovocie, running, mutex…)
-void game_init(GameState* g);
+// Inicializï¿½cia hry (nastavï¿½ hada, ovocie, running, mutexï¿½)
+// world - typ sveta (WORLD_WALLS alebo WORLD_WRAP)
+void game_init(GameState* g, WorldType world);
 
-// Nastavenie smeru pohybu (volá sa zo serverového receive threadu)
+// Nastavenie smeru pohybu (volï¿½ sa zo serverovï¿½ho receive threadu)
 void game_set_dir(GameState* g, char dir);
 
 // Posun hry o 1 tick (server game loop)
 void game_step(GameState* g);
 
 /*
-  Vytvorí textovú mapu do bufferu (out).
-  Formát:
+  Vytvorï¿½ textovï¿½ mapu do bufferu (out).
+  Formï¿½t:
     MAP\n
     <ROWS riadkov>\n
     ENDMAP\n
