@@ -6,7 +6,7 @@
 #include <pthread.h>
 #include <termios.h>
 
-#include "../Common/protocol.h"
+#include "../common/protocol.h"
 
 #define BUFFER_SIZE 4096
 
@@ -100,20 +100,16 @@ static void* render_thread(void* arg) {
             sscanf(s + strlen(CMD_SCORE), "%d", &score);
         }
 
-        /* MODE - parsuj pred TIME */
-        char* m = strstr(frame, "MODE ");
-        if (m && m < frame + frame_len - 10) {
-            sscanf(m + 5, "%31s", mode_str);
+        /* TIME */
+        char* t = strstr(frame, CMD_TIME);
+        if (t) {
+            sscanf(t + strlen(CMD_TIME), "%s", time_str);
         }
 
-        /* TIME - hľadaj "\nTIME " aby sme nenašli TIME vo vnútri TIMED */
-        char* map_start = strstr(frame, CMD_MAP);
-        char* t = strstr(frame, "\nTIME ");
-        if (t && (!map_start || t < map_start)) {
-            // Parsuj čas (preskočíme \n a "TIME ")
-            if (sscanf(t + 6, "%31s", time_str) != 1) {
-                strcpy(time_str, "N/A");
-            }
+        /* MODE */
+        char* m = strstr(frame, "MODE ");
+        if (m) {
+            sscanf(m + 5, "%s", mode_str);
         }
 
         /* GAME OVER */
@@ -167,7 +163,6 @@ static void* render_thread(void* arg) {
  * Zobrazí hlavné menu a vráti voľbu užívateľa
  */
 static int show_main_menu(void) {
-    clear_screen();
     printf("\n=== SNAKE ===\n");
     printf("1) Nová hra\n");
     printf("2) Koniec\n");
@@ -184,7 +179,6 @@ static int show_main_menu(void) {
  * Return: 1 = OK, 0 = späť do hlavného menu
  */
 static int show_game_mode_menu(char* mode_str, int* time_limit) {
-    clear_screen();
     printf("\nVyber herný režim:\n");
     printf("1) Štandardný\n");
     printf("2) Časový (hra končí po uplynutí času)\n");
@@ -207,7 +201,6 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
         strcpy(mode_str, "TIMED");
         
         while (1) {
-            clear_screen();
             printf("\nVyber čas hry:\n");
             printf("1) 30 sekúnd\n");
             printf("2) 60 sekúnd\n");
@@ -245,7 +238,6 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
  * Return: 1 = OK, 0 = späť
  */
 static int show_world_menu(const char** world) {
-    clear_screen();
     printf("\nVyber herný svet:\n");
     printf("1) Svet s prekážkami (walls)\n");
     printf("2) Svet bez prekážok (wrap)\n");
@@ -278,7 +270,7 @@ static void run_game_session(void) {
     pthread_join(tin, NULL);
     pthread_join(tr, NULL);
     
-    // Neclearujeme obrazovku - GAME OVER screen má zostať viditeľnýe();
+    disable_raw_mode();
     clear_screen();
 }
 
@@ -301,6 +293,7 @@ int main(void) {
         int choice = show_main_menu();
         
         if (choice == 2) {
+            printf("Dovidenia!\n");
             break;
         }
         
@@ -329,11 +322,15 @@ int main(void) {
             }
             send(sock, start_cmd, strlen(start_cmd), 0);
             
-            /* Spusti hernú session - už obsahuje čakanie na Enter po GAME OVER */
+            /* Spusti hernú session */
             run_game_session();
+            
+            /* Počkaj na Enter */
+            getchar();
         }
     }
 
     close(sock);
+    printf("Client ukončený.\n");
     return 0;
 }

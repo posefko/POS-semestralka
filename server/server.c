@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-#include "../Common/protocol.h"
+#include "../common/protocol.h"
 #include "game.h"
 
 /*
@@ -174,7 +174,7 @@ int main(void) {
                 if (elapsed >= g.time_limit_sec) {
                     g.running = 0;
                     int n = snprintf(out, sizeof(out),
-                        "%s\n%s %d\nMODE TIMED\n%s 0s\n%s\n*** CAS VYPRSAL ***\nENDMAP\n",
+                        "%s\n%s %d\n%s 0s LEFT\n%s\nTIME UP\nENDMAP\n",
                         CMD_GAME_OVER,
                         CMD_SCORE, g.score,
                         CMD_TIME,
@@ -195,7 +195,7 @@ int main(void) {
                 int elapsed = (int)(now - g.start_time) - g.total_pause_time;
                 
                 int n = snprintf(out, sizeof(out),
-                    "%s\n%s %d\nMODE %s\n%s %ds\n%s\n*** KONIEC HRY ***\nENDMAP\n",
+                    "%s\n%s %d\nMODE %s\n%s %ds\n%s\nGAME OVER\nENDMAP\n",
                     CMD_GAME_OVER,
                     CMD_SCORE, g.score,
                     g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
