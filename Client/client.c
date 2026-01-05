@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <termios.h>
+#include <signal.h>
 
 #include "../Common/protocol.h"
 
@@ -169,13 +170,14 @@ static void* render_thread(void* arg) {
 static int show_main_menu(void) {
     clear_screen();
     printf("\n=== SNAKE ===\n");
-    printf("1) Nová hra\n");
-    printf("2) Koniec\n");
+    printf("1) Nová hra (lokálne)\n");
+    printf("2) Pripojiť k hre (IP/PORT)\n");
+    printf("3) Koniec\n");
     printf("> ");
     fflush(stdout);
     
     char choice[10];
-    if (fgets(choice, sizeof(choice), stdin) == NULL) return 2;
+    if (fgets(choice, sizeof(choice), stdin) == NULL) return 3;
     return atoi(choice);
 }
 
@@ -241,26 +243,65 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
 }
 
 /*
- * Zobrazí menu výberu sveta
- * Return: 1 = OK, 0 = späť
+ * Zobrazí menu výberu veľkosti mapy
  */
-static int show_world_menu(const char** world) {
+static int show_size_menu(int* rows, int* cols) {
     clear_screen();
-    printf("\nVyber herný svet:\n");
-    printf("1) Svet s prekážkami (walls)\n");
-    printf("2) Svet bez prekážok (wrap)\n");
+    printf("\nVeľkosť mapy:\n");
+    printf("1) Malá (20x40)\n");
+    printf("2) Stredná (25x50)\n");
+    printf("3) Veľká (30x60)\n");
+    printf("0) Späť\n");
+    printf("> ");
+    fflush(stdout);
+    
+    char choice[10];
+    if (fgets(choice, sizeof(choice), stdin) == NULL) return 0;
+    
+    int c = atoi(choice);
+    if (c == 0) return 0;
+    
+    switch (c) {
+        case 1: *rows = 20; *cols = 40; break;
+        case 2: *rows = 25; *cols = 50; break;
+        case 3: *rows = 30; *cols = 60; break;
+        default: *rows = 20; *cols = 40;
+    }
+    return 1;
+}
+
+/*
+ * Zobrazí menu výberu sveta
+ */
+static int show_world_menu(const char** world, int* has_obstacles) {
+    clear_screen();
+    printf("\nTyp okrajov mapy:\n");
+    printf("1) Steny (náraz = koniec)\n");
+    printf("2) Wrap (prechod cez okraj)\n");
     printf("0) Späť\n");
     printf("> ");
     fflush(stdout);
     
     char choice_buf[10];
-    if (fgets(choice_buf, sizeof(choice_buf), stdin) != NULL) {
-        int wc = atoi(choice_buf);
-        if (wc == 0) return 0;
-        *world = (wc == 1) ? "WALLS" : "WRAP";
-        return 1;
-    }
-    return 0;
+    if (fgets(choice_buf, sizeof(choice_buf), stdin) == NULL) return 0;
+    int wc = atoi(choice_buf);
+    if (wc == 0) return 0;
+    *world = (wc == 1) ? "WALLS" : "WRAP";
+    
+    clear_screen();
+    printf("\nPrekážky v mape:\n");
+    printf("1) Bez prekážok\n");
+    printf("2) S prekážkami (náhodne generované)\n");
+    printf("0) Späť\n");
+    printf("> ");
+    fflush(stdout);
+    
+    if (fgets(choice_buf, sizeof(choice_buf), stdin) == NULL) return 0;
+    int oc = atoi(choice_buf);
+    if (oc == 0) return 0;
+    *has_obstacles = (oc == 2) ? 1 : 0;
+    
+    return 1;
 }
 
 /*
@@ -278,62 +319,138 @@ static void run_game_session(void) {
     pthread_join(tin, NULL);
     pthread_join(tr, NULL);
     
-    // Neclearujeme obrazovku - GAME OVER screen má zostať viditeľnýe();
-    clear_screen();
+    disable_raw_mode();
+    
+    /* GAME OVER obrazovka je už zobrazená render threadom */
+    printf("\n");
+    fflush(stdout);
+    
+    char dummy[10];
+    if (fgets(dummy, sizeof(dummy), stdin) == NULL) {
+        /* ignore */
+    }
 }
 
 int main(void) {
     struct sockaddr_in addr;
-
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(SERVER_PORT);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("connect");
-        return 1;
-    }
+    pid_t server_pid = -1;
+    char server_ip[128] = "127.0.0.1";
+    int server_port = SERVER_PORT;
 
     /* MENU LOOP */
     while (1) {
         int choice = show_main_menu();
         
-        if (choice == 2) {
+        if (choice == 3) {
             break;
         }
         
+        /* P3: Spustenie lokálneho servera */
         if (choice == 1) {
+            server_pid = fork();
+            if (server_pid == 0) {
+                execl("./bin/server", "server", NULL);
+                perror("execl failed");
+                exit(1);
+            }
+            sleep(1);
+            strcpy(server_ip, "127.0.0.1");
+            server_port = SERVER_PORT;
+        }
+        
+        /* P6: Pripojenie na vzdialený server */
+        if (choice == 2) {
+            clear_screen();
+            printf("\n=== Pripojenie na server ===\n");
+            printf("IP adresa: ");
+            fflush(stdout);
+            if (fgets(server_ip, sizeof(server_ip), stdin) != NULL) {
+                server_ip[strcspn(server_ip, "\n")] = 0;
+            }
+            printf("Port: ");
+            fflush(stdout);
+            char port_buf[10];
+            if (fgets(port_buf, sizeof(port_buf), stdin) != NULL) {
+                server_port = atoi(port_buf);
+            }
+        }
+        
+        if (choice == 1 || choice == 2) {
+            sock = socket(AF_INET, SOCK_STREAM, 0);
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(server_port);
+            inet_pton(AF_INET, server_ip, &addr.sin_addr);
+            
+            if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+                perror("connect");
+                close(sock);
+                if (server_pid > 0) {
+                    kill(server_pid, SIGTERM);
+                    server_pid = -1;
+                }
+                continue;
+            }
+            
+            printf("Pripojený na %s:%d\n", server_ip, server_port);
+            sleep(1);
+            
+            /* Výber veľkosti */
+            int map_rows = 20, map_cols = 40;
+            if (!show_size_menu(&map_rows, &map_cols)) {
+                close(sock);
+                if (server_pid > 0) {
+                    kill(server_pid, SIGTERM);
+                    server_pid = -1;
+                }
+                continue;
+            }
+            
             /* Výber režimu */
             char mode_str[32];
             int time_limit = 0;
             if (!show_game_mode_menu(mode_str, &time_limit)) {
-                continue;  // Späť do hlavného menu
+                close(sock);
+                if (server_pid > 0) {
+                    kill(server_pid, SIGTERM);
+                    server_pid = -1;
+                }
+                continue;
             }
             
-            /* Výber sveta */
+            /* Výber sveta a prekážok */
             const char* world = "WRAP";
-            if (!show_world_menu(&world)) {
-                continue;  // Späť do hlavného menu
+            int has_obstacles = 0;
+            if (!show_world_menu(&world, &has_obstacles)) {
+                close(sock);
+                if (server_pid > 0) {
+                    kill(server_pid, SIGTERM);
+                    server_pid = -1;
+                }
+                continue;
             }
             
-            /* Pošli START príkaz serveru */
+            /* Pošli START príkaz: START <rows> <cols> <walls/wrap> <obstacles> <mode> [time] */
             char start_cmd[128];
             if (strcmp(mode_str, "TIMED") == 0) {
-                snprintf(start_cmd, sizeof(start_cmd), "%s %s %s %d\n", 
-                         CMD_START, world, mode_str, time_limit);
+                snprintf(start_cmd, sizeof(start_cmd), "%s %d %d %s %s %s %d\n", 
+                         CMD_START, map_rows, map_cols, world, 
+                         has_obstacles ? "OBS" : "NOOBS", mode_str, time_limit);
             } else {
-                snprintf(start_cmd, sizeof(start_cmd), "%s %s %s\n", 
-                         CMD_START, world, mode_str);
+                snprintf(start_cmd, sizeof(start_cmd), "%s %d %d %s %s %s\n", 
+                         CMD_START, map_rows, map_cols, world,
+                         has_obstacles ? "OBS" : "NOOBS", mode_str);
             }
             send(sock, start_cmd, strlen(start_cmd), 0);
             
-            /* Spusti hernú session - už obsahuje čakanie na Enter po GAME OVER */
             run_game_session();
+            
+            close(sock);
+            if (server_pid > 0) {
+                kill(server_pid, SIGTERM);
+                server_pid = -1;
+            }
         }
     }
 
-    close(sock);
     return 0;
 }

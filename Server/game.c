@@ -4,34 +4,108 @@
 #include <time.h>
 #include <stdio.h>
 
+/* Globálne premenné pre veľkosť mapy */
+int MAP_ROWS = 20;
+int MAP_COLS = 40;
+
 /*
-  Pomocn� funkcia: je (x,y) vn�tri hran�c?
+  Pomocná funkcia: je (x,y) vnútri hraníc?
 */
 static int in_bounds(int x, int y) {
-    return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+    return x >= 0 && x < MAP_COLS && y >= 0 && y < MAP_ROWS;
 }
 
 /*
-  Vy�ist� board na medzery.
-  (board je len "canvas", kresl�me do� pred odoslan�m klientovi)
+  Vyčisti board na medzery.
 */
 static void clear_board(GameState* g) {
-    for (int y = 0; y < ROWS; y++)
-        for (int x = 0; x < COLS; x++)
+    for (int y = 0; y < MAP_ROWS; y++)
+        for (int x = 0; x < MAP_COLS; x++)
             g->board[y][x] = ' ';
 }
 
 /*
-  Nakresl� okrajov� steny s požadovanými znakmi.
+  Nakresli okrajové steny.
 */
 static void draw_walls(GameState* g, char horiz, char vert) {
-    for (int x = 0; x < COLS; x++) {
+    for (int x = 0; x < MAP_COLS; x++) {
         g->board[0][x] = horiz;
-        g->board[ROWS - 1][x] = horiz;
+        g->board[MAP_ROWS - 1][x] = horiz;
     }
-    for (int y = 0; y < ROWS; y++) {
+    for (int y = 0; y < MAP_ROWS; y++) {
         g->board[y][0] = vert;
-        g->board[y][COLS - 1] = vert;
+        g->board[y][MAP_COLS - 1] = vert;
+    }
+}
+
+/* BFS pre kontrolu dosiahnuteľnosti */
+static int is_reachable(GameState* g, int start_x, int start_y) {
+    char visited[MAX_ROWS][MAX_COLS] = {0};
+    int queue_x[MAX_ROWS * MAX_COLS], queue_y[MAX_ROWS * MAX_COLS];
+    int head = 0, tail = 0;
+    
+    queue_x[tail] = start_x;
+    queue_y[tail] = start_y;
+    tail++;
+    visited[start_y][start_x] = 1;
+    int reachable_count = 1;
+    
+    while (head < tail) {
+        int x = queue_x[head];
+        int y = queue_y[head];
+        head++;
+        
+        int dx[] = {0, 0, 1, -1};
+        int dy[] = {1, -1, 0, 0};
+        
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+            
+            if (nx > 0 && nx < MAP_COLS - 1 && ny > 0 && ny < MAP_ROWS - 1 &&
+                !visited[ny][nx] && !g->obstacles[ny][nx]) {
+                visited[ny][nx] = 1;
+                queue_x[tail] = nx;
+                queue_y[tail] = ny;
+                tail++;
+                reachable_count++;
+            }
+        }
+    }
+    
+    /* Počet voľných políčok */
+    int free_count = 0;
+    for (int y = 1; y < MAP_ROWS - 1; y++) {
+        for (int x = 1; x < MAP_COLS - 1; x++) {
+            if (!g->obstacles[y][x]) free_count++;
+        }
+    }
+    
+    return reachable_count == free_count;
+}
+
+/*
+  Generuj náhodné prekážky s kontrolou dosiahnuteľnosti
+*/
+static void generate_obstacles(GameState* g) {
+    memset(g->obstacles, 0, sizeof(g->obstacles));
+    
+    /* 3-5% políčok budú prekážky */
+    int obstacle_count = ((MAP_ROWS - 2) * (MAP_COLS - 2)) / 25;
+    
+    for (int i = 0; i < obstacle_count; i++) {
+        int x, y;
+        do {
+            x = 1 + rand() % (MAP_COLS - 2);
+            y = 1 + rand() % (MAP_ROWS - 2);
+        } while ((x == 1 && y == 1) || g->obstacles[y][x]);
+        
+        g->obstacles[y][x] = 1;
+        
+        /* Kontrola dosiahnuteľnosti */
+        if (!is_reachable(g, 1, 1)) {
+            g->obstacles[y][x] = 0;  /* Zruš túto prekážku */
+        }
     }
 }
 
@@ -49,23 +123,26 @@ static int snake_occupies(const GameState* g, int x, int y) {
 }
 
 /*
-  Spawn ovocia: n�hodn� poz�cia "vn�tri" (nie na stene) a nie na hade.
+  Spawn ovocia: náhodná pozícia, nie na hade ani prekážkach
 */
 static void spawn_fruit(GameState* g) {
     int fx, fy;
     do {
-        fx = 1 + rand() % (COLS - 2);
-        fy = 1 + rand() % (ROWS - 2);
-    } while (snake_occupies(g, fx, fy));
+        fx = 1 + rand() % (MAP_COLS - 2);
+        fy = 1 + rand() % (MAP_ROWS - 2);
+    } while (snake_occupies(g, fx, fy) || g->obstacles[fy][fx]);
     g->fruit.x = fx;
     g->fruit.y = fy;
 }
 
-void game_init(GameState* g, WorldType world, GameMode game_mode, int time_limit_sec) {
-    // vynulujeme cel� stav
+void game_init(GameState* g, WorldType world, GameMode game_mode, int time_limit_sec,
+               int rows, int cols, int has_obstacles) {
     memset(g, 0, sizeof(*g));
+    
+    /* Nastavenie veľkosti mapy */
+    MAP_ROWS = rows;
+    MAP_COLS = cols;
 
-    // init mutexu (server bude ma� 2 vl�kna: game loop + recv loop)
     pthread_mutex_init(&g->mtx, NULL);
 
     srand((unsigned)time(NULL));
@@ -78,21 +155,25 @@ void game_init(GameState* g, WorldType world, GameMode game_mode, int time_limit
     g->start_time = time(NULL);
     g->pause_start = 0;
     g->total_pause_time = 0;
-    g->death_time = 0;  // e�te nehr�� nezomrel
+    g->death_time = 0;
+    g->has_obstacles = has_obstacles;
+    
+    /* Generuj prekážky ak sú požadované */
+    if (has_obstacles) {
+        generate_obstacles(g);
+    }
 
-    // inicializ�cia hada (d�ka 3, smer doprava)
+    /* Inicializácia hada */
     g->snake.alive = 1;
     g->snake.len = 3;
     g->snake.dir = 'd';
 
-    // had do stredu mapy
-    int sx = COLS / 2;
-    int sy = ROWS / 2;
-    g->snake.parts[0] = (Pos){ sx, sy };       // hlava
-    g->snake.parts[1] = (Pos){ sx - 1, sy };   // telo
-    g->snake.parts[2] = (Pos){ sx - 2, sy };   // telo
+    int sx = MAP_COLS / 2;
+    int sy = MAP_ROWS / 2;
+    g->snake.parts[0] = (Pos){ sx, sy };
+    g->snake.parts[1] = (Pos){ sx - 1, sy };
+    g->snake.parts[2] = (Pos){ sx - 2, sy };
 
-    // ovocie
     spawn_fruit(g);
 }
 
@@ -134,19 +215,26 @@ void game_step(GameState* g) {
 
     // WORLD_WRAP: wrap-around na opačný okraj
     if (g->world == WORLD_WRAP) {
-        if (nh.x <= 0) nh.x = COLS - 2;
-        else if (nh.x >= COLS - 1) nh.x = 1;
+        if (nh.x <= 0) nh.x = MAP_COLS - 2;
+        else if (nh.x >= MAP_COLS - 1) nh.x = 1;
 
-        if (nh.y <= 0) nh.y = ROWS - 2;
-        else if (nh.y >= ROWS - 1) nh.y = 1;
+        if (nh.y <= 0) nh.y = MAP_ROWS - 2;
+        else if (nh.y >= MAP_ROWS - 1) nh.y = 1;
     }
     // WORLD_WALLS: náraz do steny = koniec
     else if (g->world == WORLD_WALLS) {
-        if (!in_bounds(nh.x, nh.y) || nh.x == 0 || nh.x == COLS - 1 || nh.y == 0 || nh.y == ROWS - 1) {
+        if (!in_bounds(nh.x, nh.y) || nh.x == 0 || nh.x == MAP_COLS - 1 || nh.y == 0 || nh.y == MAP_ROWS - 1) {
             g->snake.alive = 0;
             g->running = 0;  // Okamžite ukončiť hru
             return;
         }
+    }
+    
+    // náraz do prekážky = koniec
+    if (g->has_obstacles && g->obstacles[nh.y][nh.x]) {
+        g->snake.alive = 0;
+        g->running = 0;
+        return;
     }
 
     // náraz do seba = koniec
@@ -190,6 +278,17 @@ int game_render_map(GameState* g, char* out, int out_cap) {
         draw_walls(g, '_', '|');  // WORLD_WALLS: _ a |
     } else {
         draw_walls(g, '#', '#');  // WORLD_WRAP: # (len vizuálne)
+    }
+    
+    // Vykresli prekážky
+    if (g->has_obstacles) {
+        for (int y = 1; y < MAP_ROWS - 1; y++) {
+            for (int x = 1; x < MAP_COLS - 1; x++) {
+                if (g->obstacles[y][x]) {
+                    g->board[y][x] = '#';
+                }
+            }
+        }
     }
 
     // ovocie

@@ -6,9 +6,18 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 #include "../Common/protocol.h"
 #include "game.h"
+
+/* P1: Stavový protokol */
+typedef enum {
+    STATE_WAITING,
+    STATE_RUNNING,
+    STATE_PAUSED,
+    STATE_GAMEOVER
+} ServerState;
 
 /*
  * Context pre receive thread
@@ -16,20 +25,18 @@
 typedef struct {
     int client_fd;
     GameState* g;
-    volatile int game_started;  // signalizuje že START príkaz prišiel
-    WorldType world;            // typ sveta z START príkazu
-    GameMode game_mode;         // herný režim
-    int time_limit;             // časový limit (pre TIMED režim)
+    volatile ServerState state;
+    WorldType world;
+    GameMode game_mode;
+    int time_limit;
+    int map_rows;
+    int map_cols;
+    int has_obstacles;
+    volatile int client_disconnected;
 } ClientCtx;
 
 /*
  * RECEIVE THREAD
- * - číta príkazy od klienta
- * - START -> nastaví typ sveta a signalizuje štart
- * - PAUSE -> pozastaví hru (game_step sa nevolá)
- * - RESUME -> obnoví hru
- * - MOVE -> zmena smeru
- * - QUIT -> ukončenie hry
  */
 static void* recv_loop(void* arg) {
     ClientCtx* ctx = (ClientCtx*)arg;
@@ -37,61 +44,77 @@ static void* recv_loop(void* arg) {
 
     while (1) {
         int r = (int)recv(ctx->client_fd, buf, sizeof(buf) - 1, 0);
-        if (r <= 0) break;
+        
+        /* P5: Korektné odpojenie */
+        if (r <= 0) {
+            ctx->client_disconnected = 1;
+            if (ctx->g) {
+                pthread_mutex_lock(&ctx->g->mtx);
+                ctx->g->running = 0;
+                pthread_mutex_unlock(&ctx->g->mtx);
+            }
+            break;
+        }
 
         buf[r] = '\0';
 
-        /* START <world> <mode> [time] */
+        /* START - len v stave WAITING */
+        /* Format: START <rows> <cols> <WALLS/WRAP> <OBS/NOOBS> <mode> [time] */
         if (strncmp(buf, CMD_START " ", strlen(CMD_START) + 1) == 0) {
-            char world_str[32], mode_str[32];
+            if (ctx->state != STATE_WAITING) continue;
+            
+            char world_str[32], mode_str[32], obs_str[32];
+            int rows = 20, cols = 40;
             int time_limit = 0;
+            int parsed = sscanf(buf + strlen(CMD_START) + 1, "%d %d %s %s %s %d", 
+                               &rows, &cols, world_str, obs_str, mode_str, &time_limit);
             
-            // Parsuj: "START WALLS STANDARD" alebo "START WRAP TIMED 60"
-            int parsed = sscanf(buf + strlen(CMD_START) + 1, "%s %s %d", world_str, mode_str, &time_limit);
-            
-            if (parsed >= 2) {
-                // Typ sveta
-                if (strncmp(world_str, "WALLS", 5) == 0) {
-                    ctx->world = WORLD_WALLS;
-                } else {
-                    ctx->world = WORLD_WRAP;
-                }
+            if (parsed >= 5) {
+                ctx->map_rows = rows;
+                ctx->map_cols = cols;
+                ctx->world = (strncmp(world_str, "WALLS", 5) == 0) ? WORLD_WALLS : WORLD_WRAP;
+                ctx->has_obstacles = (strncmp(obs_str, "OBS", 3) == 0) ? 1 : 0;
                 
-                // Herný režim
                 if (strncmp(mode_str, "STANDARD", 8) == 0) {
                     ctx->game_mode = MODE_STANDARD;
                     ctx->time_limit = 0;
-                } else if (strncmp(mode_str, "TIMED", 5) == 0) {
+                } else {
                     ctx->game_mode = MODE_TIMED;
-                    ctx->time_limit = (parsed >= 3) ? time_limit : 60;  // default 60s
+                    ctx->time_limit = (parsed >= 6) ? time_limit : 60;
                 }
-                
-                ctx->game_started = 1;  // signalizuj že môžeme štartovať
+                ctx->state = STATE_RUNNING;
             }
         }
-        /* MOVE <dir> */
+        /* MOVE - len v stave RUNNING */
         else if (strncmp(buf, CMD_MOVE " ", strlen(CMD_MOVE) + 1) == 0) {
+            if (ctx->state != STATE_RUNNING) continue;
+            
             char dir = buf[strlen(CMD_MOVE) + 1];
-
             pthread_mutex_lock(&ctx->g->mtx);
             game_set_dir(ctx->g, dir);
             pthread_mutex_unlock(&ctx->g->mtx);
         }
         /* PAUSE */
         else if (strncmp(buf, CMD_PAUSE, strlen(CMD_PAUSE)) == 0) {
+            if (ctx->state != STATE_RUNNING) continue;
+            
             pthread_mutex_lock(&ctx->g->mtx);
             if (!ctx->g->paused) {
                 ctx->g->paused = 1;
                 ctx->g->pause_start = time(NULL);
+                ctx->state = STATE_PAUSED;
             }
             pthread_mutex_unlock(&ctx->g->mtx);
         }
         /* RESUME */
         else if (strncmp(buf, CMD_RESUME, strlen(CMD_RESUME)) == 0) {
+            if (ctx->state != STATE_PAUSED) continue;
+            
             pthread_mutex_lock(&ctx->g->mtx);
             if (ctx->g->paused) {
                 ctx->g->paused = 0;
                 ctx->g->total_pause_time += (int)(time(NULL) - ctx->g->pause_start);
+                ctx->state = STATE_RUNNING;
             }
             pthread_mutex_unlock(&ctx->g->mtx);
         }
@@ -100,7 +123,6 @@ static void* recv_loop(void* arg) {
             pthread_mutex_lock(&ctx->g->mtx);
             ctx->g->running = 0;
             pthread_mutex_unlock(&ctx->g->mtx);
-            // Neprerušujeme thread, pokračujeme v čítaní (čakáme na ďalší START)
         }
     }
 
@@ -135,135 +157,129 @@ static int start_server(void) {
 int main(void) {
     int server_fd = start_server();
     printf("Server listening on port %d\n", SERVER_PORT);
+    
+    /* P2: Non-blocking accept */
+    fcntl(server_fd, F_SETFL, O_NONBLOCK);
 
-    int client_fd = accept(server_fd, NULL, NULL);
-    if (client_fd < 0) { perror("accept"); return 1; }
-    printf("Client connected\n");
-
-    char out[8192];
-    GameState g;
-    ClientCtx ctx = { .client_fd = client_fd, .g = &g, .game_started = 0, .world = WORLD_WRAP };
-
-    /* Spustenie recv_loop threadu */
-    pthread_t th_recv;
-    pthread_create(&th_recv, NULL, recv_loop, &ctx);
-
-    /* HLAVNÝ LOOP - podporuje viacero hier */
     while (1) {
-        /* Čakáme na START príkaz (signalizácia z recv_loop) */
-        while (!ctx.game_started) {
-            usleep(10000); // 10ms
+        /* P4: Odmietnutie ďalších klientov */
+        int client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd < 0) {
+            usleep(100000);
+            continue;
         }
+        
+        printf("Client connected\n");
+        
+        char out[8192];
+        GameState g;
+        memset(&g, 0, sizeof(g));  // Inicializuj na 0
+        
+        ClientCtx ctx = { 
+            .client_fd = client_fd, 
+            .g = &g, 
+            .state = STATE_WAITING, 
+            .world = WORLD_WRAP,
+            .client_disconnected = 0
+        };
 
-        printf("Starting game - World: %s, Mode: %s%s\n", 
-               ctx.world == WORLD_WALLS ? "WALLS" : "WRAP",
-               ctx.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
-               ctx.game_mode == MODE_TIMED ? "" : "");
+        pthread_t th_recv;
+        pthread_create(&th_recv, NULL, recv_loop, &ctx);
 
-        /* Inicializácia hry s vybraným typom sveta a režimom */
-        game_init(&g, ctx.world, ctx.game_mode, ctx.time_limit);
+        /* HLAVNÝ LOOP */
+        while (!ctx.client_disconnected) {
+            /* Čakáme na START */
+            while (ctx.state == STATE_WAITING && !ctx.client_disconnected) {
+                usleep(10000);
+            }
+            
+            if (ctx.client_disconnected) break;
 
-        /* GAME LOOP */
-        while (1) {
-            pthread_mutex_lock(&g.mtx);
+            printf("Starting game - World: %s, Mode: %s, Size: %dx%d, Obstacles: %s\n", 
+                   ctx.world == WORLD_WALLS ? "WALLS" : "WRAP",
+                   ctx.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
+                   ctx.map_rows, ctx.map_cols,
+                   ctx.has_obstacles ? "YES" : "NO");
 
-            /* Kontrola časového limitu (TIMED režim) */
-            if (g.game_mode == MODE_TIMED && g.time_limit_sec > 0) {
-                time_t now = time(NULL);
-                int elapsed = (int)(now - g.start_time) - g.total_pause_time;
-                if (elapsed >= g.time_limit_sec) {
-                    g.running = 0;
+            game_init(&g, ctx.world, ctx.game_mode, ctx.time_limit, ctx.map_rows, ctx.map_cols, ctx.has_obstacles);
+
+            /* GAME LOOP */
+            while (ctx.state == STATE_RUNNING || ctx.state == STATE_PAUSED) {
+                if (ctx.client_disconnected) break;
+                
+                pthread_mutex_lock(&g.mtx);
+
+                /* Kontrola časového limitu */
+                if (g.game_mode == MODE_TIMED && g.time_limit_sec > 0 && ctx.state == STATE_RUNNING) {
+                    time_t now = time(NULL);
+                    int elapsed = (int)(now - g.start_time) - g.total_pause_time;
+                    if (elapsed >= g.time_limit_sec) {
+                        g.running = 0;
+                        ctx.state = STATE_GAMEOVER;
+                        int n = snprintf(out, sizeof(out),
+                            "%s\n%s %d\nMODE TIMED\n%s 0s\n%s\n*** CAS VYPRSAL ***\nENDMAP\n",
+                            CMD_GAME_OVER, CMD_SCORE, g.score, CMD_TIME, CMD_MAP);
+                        pthread_mutex_unlock(&g.mtx);
+                        send(client_fd, out, (size_t)n, 0);
+                        break;
+                    }
+                }
+
+                /* game_step len v RUNNING */
+                if (ctx.state == STATE_RUNNING && !g.paused) {
+                    game_step(&g);
+                }
+
+                /* GAME OVER */
+                if (!g.running) {
+                    ctx.state = STATE_GAMEOVER;
+                    time_t now = time(NULL);
+                    int elapsed = (int)(now - g.start_time) - g.total_pause_time;
                     int n = snprintf(out, sizeof(out),
-                        "%s\n%s %d\nMODE TIMED\n%s 0s\n%s\n*** CAS VYPRSAL ***\nENDMAP\n",
-                        CMD_GAME_OVER,
-                        CMD_SCORE, g.score,
-                        CMD_TIME,
-                        CMD_MAP
-                    );
+                        "%s\n%s %d\nMODE %s\n%s %ds\n%s\n*** KONIEC HRY ***\nENDMAP\n",
+                        CMD_GAME_OVER, CMD_SCORE, g.score,
+                        g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
+                        CMD_TIME, elapsed, CMD_MAP);
                     pthread_mutex_unlock(&g.mtx);
                     send(client_fd, out, (size_t)n, 0);
                     break;
                 }
-            }
 
-            game_step(&g);
+                /* SCORE, MODE, TIME */
+                int n = snprintf(out, sizeof(out), "%s %d\n", CMD_SCORE, g.score);
+                n += snprintf(out + n, sizeof(out) - n, "MODE %s\n",
+                    g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED");
 
-            /* GAME OVER */
-            if (!g.running) {
-                // Vypočítať finálny čas
                 time_t now = time(NULL);
-                int elapsed = (int)(now - g.start_time) - g.total_pause_time;
-                
-                int n = snprintf(out, sizeof(out),
-                    "%s\n%s %d\nMODE %s\n%s %ds\n%s\n*** KONIEC HRY ***\nENDMAP\n",
-                    CMD_GAME_OVER,
-                    CMD_SCORE, g.score,
-                    g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
-                    CMD_TIME, elapsed,
-                    CMD_MAP
-                );
+                int elapsed = g.paused ? 
+                    (int)(g.pause_start - g.start_time) - g.total_pause_time :
+                    (int)(now - g.start_time) - g.total_pause_time;
+
+                if (g.game_mode == MODE_TIMED) {
+                    int remaining = g.time_limit_sec - elapsed;
+                    if (remaining < 0) remaining = 0;
+                    n += snprintf(out + n, sizeof(out) - n, "%s %ds LEFT\n", CMD_TIME, remaining);
+                } else {
+                    n += snprintf(out + n, sizeof(out) - n, "%s %ds\n", CMD_TIME, elapsed);
+                }
+
+                n += game_render_map(&g, out + n, (int)sizeof(out) - n);
                 pthread_mutex_unlock(&g.mtx);
+
                 send(client_fd, out, (size_t)n, 0);
-                break;
+                usleep(150 * 1000);
             }
 
-            /* SCORE */
-            int n = snprintf(out, sizeof(out),
-                "%s %d\n",
-                CMD_SCORE,
-                g.score
-            );
-
-            /* MODE */
-            n += snprintf(out + n, sizeof(out) - n,
-                "MODE %s\n",
-                g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED"
-            );
-
-            /* TIME */
-            time_t now = time(NULL);
-            int elapsed;
-            if (g.paused) {
-                // Počas pauzy zobraz čas v momente pozastavenia
-                elapsed = (int)(g.pause_start - g.start_time) - g.total_pause_time;
-            } else {
-                // Bežiaci čas
-                elapsed = (int)(now - g.start_time) - g.total_pause_time;
-            }
-            
-            // Pre TIMED: zobraz zostávajúci čas, pre STANDARD: uplynulý čas
-            if (g.game_mode == MODE_TIMED) {
-                int remaining = g.time_limit_sec - elapsed;
-                if (remaining < 0) remaining = 0;
-                n += snprintf(out + n, sizeof(out) - n,
-                    "%s %ds LEFT\n",
-                    CMD_TIME,
-                    remaining
-                );
-            } else {
-                n += snprintf(out + n, sizeof(out) - n,
-                    "%s %ds\n",
-                    CMD_TIME,
-                    elapsed
-                );
-            }
-
-            /* MAP */
-            n += game_render_map(&g, out + n, (int)sizeof(out) - n);
-
-            pthread_mutex_unlock(&g.mtx);
-
-            send(client_fd, out, (size_t)n, 0);
-            usleep(150 * 1000);
+            pthread_mutex_destroy(&g.mtx);
+            ctx.state = STATE_WAITING;
+            printf("Game ended, waiting for next START...\n");
         }
 
-        pthread_mutex_destroy(&g.mtx);
-        ctx.game_started = 0;  // reset pre ďalšiu hru
-        printf("Game ended, waiting for next START...\n");
+        pthread_join(th_recv, NULL);
+        close(client_fd);
+        printf("Client disconnected\n");
     }
 
-    pthread_join(th_recv, NULL);
-    close(client_fd);
     close(server_fd);
     return 0;
 }
