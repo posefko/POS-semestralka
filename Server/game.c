@@ -5,15 +5,15 @@
 #include <stdio.h>
 
 /*
-  Pomocná funkcia: je (x,y) vnútri hraníc?
+  Pomocnï¿½ funkcia: je (x,y) vnï¿½tri hranï¿½c?
 */
 static int in_bounds(int x, int y) {
     return x >= 0 && x < COLS && y >= 0 && y < ROWS;
 }
 
 /*
-  Vyèistí board na medzery.
-  (board je len "canvas", kreslíme doò pred odoslaním klientovi)
+  Vyï¿½istï¿½ board na medzery.
+  (board je len "canvas", kreslï¿½me doï¿½ pred odoslanï¿½m klientovi)
 */
 static void clear_board(GameState* g) {
     for (int y = 0; y < ROWS; y++)
@@ -22,23 +22,22 @@ static void clear_board(GameState* g) {
 }
 
 /*
-  Nakreslí okrajové steny (#).
-  V tomto kroku: náraz do steny = koniec hry.
+  Nakreslï¿½ okrajovï¿½ steny s poÅ¾adovanÃ½mi znakmi.
 */
-static void draw_walls(GameState* g) {
+static void draw_walls(GameState* g, char horiz, char vert) {
     for (int x = 0; x < COLS; x++) {
-        g->board[0][x] = '#';
-        g->board[ROWS - 1][x] = '#';
+        g->board[0][x] = horiz;
+        g->board[ROWS - 1][x] = horiz;
     }
     for (int y = 0; y < ROWS; y++) {
-        g->board[y][0] = '#';
-        g->board[y][COLS - 1] = '#';
+        g->board[y][0] = vert;
+        g->board[y][COLS - 1] = vert;
     }
 }
 
 /*
-  Zistí, èi had zaberá políèko (x,y).
-  Použijeme pre:
+  Zistï¿½, ï¿½i had zaberï¿½ polï¿½ï¿½ko (x,y).
+  Pouï¿½ijeme pre:
   - self-collision
   - aby ovocie nespawnlo na hade
 */
@@ -50,7 +49,7 @@ static int snake_occupies(const GameState* g, int x, int y) {
 }
 
 /*
-  Spawn ovocia: náhodná pozícia "vnútri" (nie na stene) a nie na hade.
+  Spawn ovocia: nï¿½hodnï¿½ pozï¿½cia "vnï¿½tri" (nie na stene) a nie na hade.
 */
 static void spawn_fruit(GameState* g) {
     int fx, fy;
@@ -62,17 +61,26 @@ static void spawn_fruit(GameState* g) {
     g->fruit.y = fy;
 }
 
-void game_init(GameState* g) {
-    // vynulujeme celý stav
+void game_init(GameState* g, WorldType world, GameMode game_mode, int time_limit_sec) {
+    // vynulujeme celï¿½ stav
     memset(g, 0, sizeof(*g));
 
-    // init mutexu (server bude ma 2 vlákna: game loop + recv loop)
+    // init mutexu (server bude maï¿½ 2 vlï¿½kna: game loop + recv loop)
     pthread_mutex_init(&g->mtx, NULL);
 
     srand((unsigned)time(NULL));
     g->running = 1;
+    g->score = 0;
+    g->world = world;
+    g->game_mode = game_mode;
+    g->paused = 0;
+    g->time_limit_sec = time_limit_sec;
+    g->start_time = time(NULL);
+    g->pause_start = 0;
+    g->total_pause_time = 0;
+    g->death_time = 0;  // eï¿½te nehrï¿½ï¿½ nezomrel
 
-    // inicializácia hada (dåžka 3, smer doprava)
+    // inicializï¿½cia hada (dï¿½ka 3, smer doprava)
     g->snake.alive = 1;
     g->snake.len = 3;
     g->snake.dir = 'd';
@@ -89,29 +97,29 @@ void game_init(GameState* g) {
 }
 
 /*
-  Nastaví smer pohybu z inputu.
-  Pridávame ochranu proti otoèeniu o 180 stupòov (aby sa had nezabil hneï).
+  Nastavï¿½ smer pohybu z inputu.
+  Pridï¿½vame ochranu proti otoï¿½eniu o 180 stupï¿½ov (aby sa had nezabil hneï¿½).
 */
 void game_set_dir(GameState* g, char dir) {
     char cur = g->snake.dir;
 
-    // zakáž protismer
+    // zakï¿½ protismer
     if ((cur == 'w' && dir == 's') || (cur == 's' && dir == 'w') ||
         (cur == 'a' && dir == 'd') || (cur == 'd' && dir == 'a')) return;
 
-    // povo¾ len w/a/s/d
+    // povoï¿½ len w/a/s/d
     if (dir == 'w' || dir == 'a' || dir == 's' || dir == 'd')
         g->snake.dir = dir;
 }
 
 /*
   Posun o jeden tick:
-  - vypoèíta novú hlavu
+  - vypoï¿½ï¿½ta novï¿½ hlavu
   - skontroluje stenu a self-collision
-  - ak zje ovocie -> rast + nový fruit
+  - ak zje ovocie -> rast + novï¿½ fruit
 */
 void game_step(GameState* g) {
-    if (!g->running || !g->snake.alive) return;
+    if (!g->running || !g->snake.alive || g->paused) return;  // nepohybujeme hadom ak je pauza
 
     Pos head = g->snake.parts[0];
     Pos nh = head;
@@ -124,25 +132,41 @@ void game_step(GameState* g) {
     default: break;
     }
 
-    // náraz do steny = koniec
-    if (!in_bounds(nh.x, nh.y) || nh.x == 0 || nh.x == COLS - 1 || nh.y == 0 || nh.y == ROWS - 1) {
-        g->snake.alive = 0;
-        g->running = 0;
-        return;
+    // WORLD_WRAP: wrap-around na opaÄnÃ½ okraj
+    if (g->world == WORLD_WRAP) {
+        if (nh.x <= 0) nh.x = COLS - 2;
+        else if (nh.x >= COLS - 1) nh.x = 1;
+
+        if (nh.y <= 0) nh.y = ROWS - 2;
+        else if (nh.y >= ROWS - 1) nh.y = 1;
+    }
+    // WORLD_WALLS: nÃ¡raz do steny = koniec
+    else if (g->world == WORLD_WALLS) {
+        if (!in_bounds(nh.x, nh.y) || nh.x == 0 || nh.x == COLS - 1 || nh.y == 0 || nh.y == ROWS - 1) {
+            g->snake.alive = 0;
+            g->running = 0;  // OkamÅ¾ite ukonÄiÅ¥ hru
+            return;
+        }
     }
 
-    // náraz do seba = koniec
+    // nÃ¡raz do seba = koniec
     if (snake_occupies(g, nh.x, nh.y)) {
         g->snake.alive = 0;
-        g->running = 0;
+        g->running = 0;  // OkamÅ¾ite ukonÄiÅ¥ hru
         return;
     }
 
     // zjedol ovocie?
     int ate = (nh.x == g->fruit.x && nh.y == g->fruit.y);
+    
 
-    // ak zje, zväèšíme dåžku (max MAX_SNAKE)
-    if (ate&& g->snake.len < MAX_SNAKE) g->snake.len++;
+    // ak zje, zvï¿½ï¿½ï¿½me dï¿½ku (max MAX_SNAKE)
+    if (ate) {
+        g->score += 10;
+        if (g->snake.len < MAX_SNAKE){
+            g->snake.len++;
+        }
+    }
 
     // posun segmentov: od konca k hlave
     for (int i = g->snake.len - 1; i > 0; i--) {
@@ -150,17 +174,23 @@ void game_step(GameState* g) {
     }
     g->snake.parts[0] = nh;
 
-    // po zjedení spawnni nové ovocie
+    // po zjedenï¿½ spawnni novï¿½ ovocie
     if (ate) spawn_fruit(g);
 }
 
 /*
-  Vytvorí ASCII mapu do out bufferu.
-  Klient to nebude parsova "inteligentne" – len to vypíše.
+  Vytvorï¿½ ASCII mapu do out bufferu.
+  Klient to nebude parsovaï¿½ "inteligentne" ï¿½ len to vypï¿½e.
 */
 int game_render_map(GameState* g, char* out, int out_cap) {
     clear_board(g);
-    draw_walls(g);
+    
+    // Vykresli okraje podÄ¾a typu sveta
+    if (g->world == WORLD_WALLS) {
+        draw_walls(g, '_', '|');  // WORLD_WALLS: _ a |
+    } else {
+        draw_walls(g, '#', '#');  // WORLD_WRAP: # (len vizuÃ¡lne)
+    }
 
     // ovocie
     g->board[g->fruit.y][g->fruit.x] = 'o';
@@ -172,9 +202,14 @@ int game_render_map(GameState* g, char* out, int out_cap) {
         g->board[y][x] = (i == 0) ? '@' : '*';
     }
 
-    // zloženie textu do out
+    // zloï¿½enie textu do out
     int n = 0;
     n += snprintf(out + n, out_cap - n, "MAP\n");
+
+    // Ak je pauza, pridaÅ¥ PAUSED indikÃ¡tor
+    if (g->paused) {
+        n += snprintf(out + n, out_cap - n, "=== PAUSED (ESC to resume) ===\n");
+    }
 
     for (int y = 0; y < ROWS; y++) {
         for (int x = 0; x < COLS; x++) {
