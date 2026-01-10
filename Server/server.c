@@ -11,7 +11,7 @@
 #include "../Common/protocol.h"
 #include "game.h"
 
-/* P1: Stavový protokol */
+/* Stavovy protokol */
 typedef enum {
     STATE_WAITING,
     STATE_RUNNING,
@@ -45,9 +45,8 @@ static void* recv_loop(void* arg) {
     while (1) {
         int r = (int)recv(ctx->client_fd, buf, sizeof(buf) - 1, 0);
         
-        /* P5: Korektné odpojenie
-         * Odpojenie klienta NESMIE okamžite ukončiť hru na serveri.
-         * Len si označíme stav a skončí recv thread. Hru ukončí hlavný game loop.
+        /* 
+         * Odpojenie klienta neukonci hru na serveri, hra pokracuje
          */
         if (r <= 0) {
             ctx->client_disconnected = 1;
@@ -136,8 +135,8 @@ static void sleep_us(long us)
 }
 
 /*
- * Vytvorí server socket
- */
+* Vytvori server socket
+*/
 static int start_server(void) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); exit(1); }
@@ -161,19 +160,19 @@ static int start_server(void) {
 }
 
 int main(void) {
-    /* aby sa printf zobrazovali hneď aj pri spúšťaní cez iný proces */
+    /* aby sa printf zobrazovali hned aj pri spustani cez iny proces */
     setvbuf(stdout, NULL, _IONBF, 0);
 
     int server_fd = start_server();
     printf("Server listening on port %d\n", SERVER_PORT);
 
-    /* P2: Non-blocking accept */
+    /* Non-blocking accept */
     fcntl(server_fd, F_SETFL, O_NONBLOCK);
 
     int exit_after_game = 0;
 
     while (1) {
-        /* P4: Odmietnutie ďalších klientov */
+        /* Odmietnutie dalsich klientov */
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) {
             sleep_us(100000);
@@ -197,15 +196,15 @@ int main(void) {
         pthread_t th_recv;
         pthread_create(&th_recv, NULL, recv_loop, &ctx);
 
-        /* HLAVNÝ LOOP (čakáme na START alebo disconnect pred START) */
+        /* HLAVNY LOOP (cakame na START alebo disconnect pred START) */
         while (!ctx.client_disconnected) {
-            /* Čakáme na START */
+            /* Cakame na START */
             while (ctx.state == STATE_WAITING && !ctx.client_disconnected) {
                 sleep_us(10000);
             }
 
             if (ctx.client_disconnected) {
-                break; /* klient odišiel ešte pred START */
+                break; /* klient odisiel este pred START */
             }
 
             printf("Starting game - World: %s, Mode: %s, Size: %dx%d, Obstacles: %s\n",
@@ -218,8 +217,7 @@ int main(void) {
                 ctx.map_rows, ctx.map_cols, ctx.has_obstacles);
 
             /*
-             * P5: ak klient odíde, server pokračuje.
-             * Aby server nebežal donekonečna bez klienta, ukončí hru po timeout-e.
+             * Aby server nebezal donekonecna bez klienta, ukonci hru po timeout-e.
              */
             time_t disconnected_at = 0;
             const int DISCONNECT_TIMEOUT_SEC = 10;
@@ -227,7 +225,7 @@ int main(void) {
             /* GAME LOOP */
             while (ctx.state == STATE_RUNNING || ctx.state == STATE_PAUSED) {
 
-                /* P5 timeout bez klienta: nespôsobí okamžité ukončenie, ale korektne dobehne */
+                /* nesposobi okamzite ukoncenie, ale korektne dobehne */
                 if (ctx.client_disconnected) {
                     if (disconnected_at == 0) disconnected_at = time(NULL);
                     if ((int)(time(NULL) - disconnected_at) >= DISCONNECT_TIMEOUT_SEC) {
@@ -242,7 +240,7 @@ int main(void) {
 
                 pthread_mutex_lock(&g.mtx);
 
-                /* Kontrola časového limitu */
+                /* Kontrola casoveho limitu */
                 if (g.game_mode == MODE_TIMED && g.time_limit_sec > 0 && ctx.state == STATE_RUNNING) {
                     time_t now = time(NULL);
                     int elapsed = (int)(now - g.start_time) - g.total_pause_time;
@@ -318,21 +316,19 @@ int main(void) {
                 sleep_us(150 * 1000);
             }
 
-            /* Po skončení hry: ukonči spojenie, aby recv thread bezpečne skončil */
+            /* Po skonceni hry: ukonci spojenie, aby recv thread bezpecne skoncil */
             shutdown(client_fd, SHUT_RDWR);
 
-            /* Chceme 1 server = 1 hra (P5: server zanikne po skončení hry) */
+            /* aby server zanikol po skonceni hry */
             exit_after_game = 1;
 
-            /* Pozor: NEROB destroy mutexu, kým beží recv thread.
-               Najprv počkaj na recv thread. */
-            break; /* skonči HLAVNÝ LOOP pre tohto klienta */
+            break; /* skonci HLAVNY LOOP pre tohto klienta */
         }
 
-        /* Bezpečné ukončenie vlákna a zdrojov */
+        /* Bezpecne ukoncenie vlakna a zdrojov */
         pthread_join(th_recv, NULL);
 
-        /* Mutex destroy až po join */
+        /* Mutex destroy az po join */
         pthread_mutex_destroy(&g.mtx);
 
         close(client_fd);

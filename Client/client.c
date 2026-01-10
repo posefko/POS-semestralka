@@ -15,8 +15,8 @@ static int sock;
 static volatile int running = 1;
 static int score = 0;
 
-/* ================= TERMINAL ================= */
 
+// TERMINAL
 static struct termios old_termios;
 
 static void enable_raw_mode(void) {
@@ -35,13 +35,13 @@ static void clear_screen(void) {
     (void)write(STDOUT_FILENO, "\033[H\033[J", 6);
 }
 
-/* ================= INPUT THREAD ================= */
 
+// INPUT THREAD
 static void* input_thread(void* arg) {
     (void)arg;  // unused
     char c;
     char msg[32];
-    static int paused = 0;  // lokálny flag pre toggle pauzy
+    static int paused = 0;  // lokalny flag pre toggle pauzy
 
     enable_raw_mode();
 
@@ -55,7 +55,7 @@ static void* input_thread(void* arg) {
             break;
         }
 
-        // ESC (kód 27) - prepínanie pauzy
+        // ESC (kod 27) - prepinanie pauzy
         if (c == 27) {
             if (paused) {
                 send(sock, CMD_RESUME "\n", strlen(CMD_RESUME) + 1, 0);
@@ -77,8 +77,8 @@ static void* input_thread(void* arg) {
     return NULL;
 }
 
-/* ================= RENDER THREAD ================= */
-
+// tato cast bola vytvorena pomocou AI
+// RENDER THREAD
 static void* render_thread(void* arg) {
     (void)arg;  // unused
     char recvbuf[BUFFER_SIZE];
@@ -107,11 +107,11 @@ static void* render_thread(void* arg) {
             sscanf(m + 5, "%31s", mode_str);
         }
 
-        /* TIME - hľadaj "\nTIME " aby sme nenašli TIME vo vnútri TIMED */
+        /* TIME - hladaj "\nTIME " aby sme nenasli TIME vo vnutri TIMED */
         char* map_start = strstr(frame, CMD_MAP);
         char* t = strstr(frame, "\nTIME ");
         if (t && (!map_start || t < map_start)) {
-            // Parsuj čas (preskočíme \n a "TIME ")
+            // Parsuje cas (preskocime \n a "TIME")
             if (sscanf(t + 6, "%31s", time_str) != 1) {
                 strcpy(time_str, "N/A");
             }
@@ -124,11 +124,11 @@ static void* render_thread(void* arg) {
             printf("╔════════════════════════════════════════════════════════════╗\n");
             printf("║                        GAME OVER                           ║\n");
             printf("╠════════════════════════════════════════════════════════════╣\n");
-            printf("║  Režim: %-20s                            ║\n", mode_str);
-            printf("║  Finálne skóre: %-5d                                    ║\n", score);
-            printf("║  Čas: %-20s                               ║\n", time_str);
+            printf("║  Rezim: %-20s                            ║\n", mode_str);
+            printf("║  Finalne skore: %-5d                                    ║\n", score);
+            printf("║  Cas: %-20s                               ║\n", time_str);
             printf("╠════════════════════════════════════════════════════════════╣\n");
-            printf("║         Stlač Enter pre návrat do menu...                  ║\n");
+            printf("║         Stlac Enter pre navrat do menu...                  ║\n");
             printf("╚════════════════════════════════════════════════════════════╝\n");
             printf("\n");
             running = 0;
@@ -143,9 +143,9 @@ static void* render_thread(void* arg) {
             m1 += strlen(CMD_MAP) + 1;
             clear_screen();
             
-            // Zobraz header s informáciami o hre
+            // Zobraz header s informaciami o hre
             printf("╔════════════════════════════════════════════════════════════╗\n");
-            printf("║  REŽIM: %-10s │ SKÓRE: %-5d │ ČAS: %-15s ║\n", 
+            printf("║  REZIM: %-10s │ SKORE: %-5d │ CAS: %-15s ║\n", 
                    mode_str, score, time_str);
             printf("╚════════════════════════════════════════════════════════════╝\n");
             
@@ -162,16 +162,15 @@ static void* render_thread(void* arg) {
     return NULL;
 }
 
-/* ================= MAIN ================= */
-
+// MAIN
 /*
- * Zobrazí hlavné menu a vráti voľbu užívateľa
- */
+* Zobrazi hlavne menu a vrati volbu uzivatela
+*/
 static int show_main_menu(void) {
     clear_screen();
     printf("\n=== SNAKE ===\n");
-    printf("1) Nová hra (lokálne)\n");
-    printf("2) Pripojiť k hre (IP/PORT)\n");
+    printf("1) Nova hra (lokalne)\n");
+    printf("2) Pripojit k hre (IP/PORT)\n");
     printf("3) Koniec\n");
     printf("> ");
     fflush(stdout);
@@ -182,17 +181,17 @@ static int show_main_menu(void) {
 }
 
 /*
- * Zobrazí menu výberu herného režimu a vráti režim + čas
- * Return: 1 = OK, 0 = späť do hlavného menu
- */
+* Zobrazi menu vyberu herneho rezimu a vrati rezim + cas
+* Return: 1 = OK, 0 = spat do hlavneho menu
+*/
 static int show_game_mode_menu(char* mode_str, int* time_limit) {
-    clear_screen();
-    printf("\nVyber herný režim:\n");
-    printf("1) Štandardný\n");
-    printf("2) Časový (hra končí po uplynutí času)\n");
-    printf("0) Späť\n");
-    printf("> ");
-    fflush(stdout);
+clear_screen();
+printf("\nVyber herny rezim:\n");
+printf("1) Standardny\n");
+printf("2) Casovy (hra konci po uplynutí casu)\n");
+printf("0) Spat\n");
+printf("> ");
+fflush(stdout);
     
     char choice[10];
     if (fgets(choice, sizeof(choice), stdin) == NULL) {
@@ -202,7 +201,7 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
     int c = atoi(choice);
     
     if (c == 0) {
-        return 0;  // Späť
+        return 0;  // Spat
     }
     
     if (c == 2) {
@@ -210,25 +209,25 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
         
         while (1) {
             clear_screen();
-            printf("\nVyber čas hry:\n");
-            printf("1) 30 sekúnd\n");
-            printf("2) 60 sekúnd\n");
-            printf("3) 120 sekúnd\n");
-            printf("0) Späť\n");
+            printf("\nVyber cas hry:\n");
+            printf("1) 30 sekund\n");
+            printf("2) 60 sekund\n");
+            printf("3) 120 sekund\n");
+            printf("0) Spat\n");
             printf("> ");
             fflush(stdout);
             
             if (fgets(choice, sizeof(choice), stdin) != NULL) {
                 int tc = atoi(choice);
                 if (tc == 0) {
-                    return 0;  // Späť do hlavného menu
+                    return 0;  // Spat do hlavneho menu
                 }
                 switch (tc) {
                     case 1: *time_limit = 30; return 1;
                     case 2: *time_limit = 60; return 1;
                     case 3: *time_limit = 120; return 1;
                     default: 
-                        printf("Neplatná voľba, skús znova.\n");
+                        printf("Neplatna volba, skus znova.\n");
                         continue;
                 }
             } else {
@@ -243,15 +242,15 @@ static int show_game_mode_menu(char* mode_str, int* time_limit) {
 }
 
 /*
- * Zobrazí menu výberu veľkosti mapy
- */
+* Zobrazi menu vyberu velkosti mapy
+*/
 static int show_size_menu(int* rows, int* cols) {
     clear_screen();
-    printf("\nVeľkosť mapy:\n");
-    printf("1) Malá (20x40)\n");
-    printf("2) Stredná (25x50)\n");
-    printf("3) Veľká (30x60)\n");
-    printf("0) Späť\n");
+    printf("\nVelkost mapy:\n");
+    printf("1) Mala (20x40)\n");
+    printf("2) Stredna (25x50)\n");
+    printf("3) Velka (30x60)\n");
+    printf("0) Spat\n");
     printf("> ");
     fflush(stdout);
     
@@ -271,14 +270,14 @@ static int show_size_menu(int* rows, int* cols) {
 }
 
 /*
- * Zobrazí menu výberu sveta
- */
+* Zobrazi menu vyberu sveta
+*/
 static int show_world_menu(const char** world, int* has_obstacles) {
     clear_screen();
     printf("\nTyp okrajov mapy:\n");
-    printf("1) Steny (náraz = koniec)\n");
+    printf("1) Steny (naraz = koniec)\n");
     printf("2) Wrap (prechod cez okraj)\n");
-    printf("0) Späť\n");
+    printf("0) Spat\n");
     printf("> ");
     fflush(stdout);
     
@@ -289,10 +288,10 @@ static int show_world_menu(const char** world, int* has_obstacles) {
     *world = (wc == 1) ? "WALLS" : "WRAP";
     
     clear_screen();
-    printf("\nPrekážky v mape:\n");
-    printf("1) Bez prekážok\n");
-    printf("2) S prekážkami (náhodne generované)\n");
-    printf("0) Späť\n");
+    printf("\nPrekazky v mape:\n");
+    printf("1) Bez prekazok\n");
+    printf("2) S prekazkami (nahodne generovane)\n");
+    printf("0) Spat\n");
     printf("> ");
     fflush(stdout);
     
@@ -305,8 +304,8 @@ static int show_world_menu(const char** world, int* has_obstacles) {
 }
 
 /*
- * Spustí hernú session (thready, raw mode)
- */
+* Spusti hernu session (thready, raw mode)
+*/
 static void run_game_session(void) {
     pthread_t tin, tr;
     
@@ -321,13 +320,13 @@ static void run_game_session(void) {
     
     disable_raw_mode();
     
-    /* GAME OVER obrazovka je už zobrazená render threadom */
+    /* GAME OVER obrazovka je uz zobrazena render threadom */
     printf("\n");
     fflush(stdout);
     
     char dummy[10];
     if (fgets(dummy, sizeof(dummy), stdin) == NULL) {
-        /* ignore */
+        //ignore
     }
 }
 
@@ -335,13 +334,13 @@ int main(void) {
     struct sockaddr_in addr;
     pid_t server_pid = -1;
 
-    int local_server_started = 0; /* či sme tento server forkli my */
-    int game_started = 0;         /* či sme už poslali START */
+    int local_server_started = 0; // ci sme tento server forkli my
+    int game_started = 0;         // ci sme uz poslali START
 
     char server_ip[128] = "127.0.0.1";
     int server_port = SERVER_PORT;
 
-    /* MENU LOOP */
+    // MENU LOOP
     while (1) {
         int choice = show_main_menu();
         
@@ -349,9 +348,9 @@ int main(void) {
             break;
         }
         
-        /* P3: Spustenie lokálneho servera */
+        // Spustenie lokalneho servera
         if (choice == 1) {
-            /* ak už lokálny server beží, nechceme spúšťať ďalší (bind na port by padol) */
+            // ak uz lokalny server bezi, nechceme spustat dalsi (bind na port by padol)
             if (server_pid > 0 && kill(server_pid, 0) == 0) {
                 local_server_started = 1;
                 game_started = 0;
@@ -373,7 +372,8 @@ int main(void) {
         }
 
         
-        /* P6: Pripojenie na vzdialený server */
+        
+        // Pripojenie na vzdialeny server
         if (choice == 2) {
             clear_screen();
             printf("\n=== Pripojenie na server ===\n");
@@ -407,10 +407,10 @@ int main(void) {
                 continue;
             }
             
-            printf("Pripojený na %s:%d\n", server_ip, server_port);
+            printf("Pripojeny na %s:%d\n", server_ip, server_port);
             sleep(1);
             
-            /* Výber veľkosti */
+            // Vyber velkosti
             int map_rows = 20, map_cols = 40;
             if (!show_size_menu(&map_rows, &map_cols)) {
                 close(sock);
@@ -422,7 +422,7 @@ int main(void) {
                 continue;
             }
             
-            /* Výber režimu */
+            // Vyber rezimu
             char mode_str[32];
             int time_limit = 0;
             if (!show_game_mode_menu(mode_str, &time_limit)) {
@@ -435,7 +435,7 @@ int main(void) {
                 continue;
             }
             
-            /* Výber sveta a prekážok */
+            // Vyber sveta a prekazok
             const char* world = "WRAP";
             int has_obstacles = 0;
             if (!show_world_menu(&world, &has_obstacles)) {
@@ -448,7 +448,7 @@ int main(void) {
                 continue;
             }
             
-            /* Pošli START príkaz: START <rows> <cols> <walls/wrap> <obstacles> <mode> [time] */
+            // Posle START prikaz: START <rows> <cols> <walls/wrap> <obstacles> <mode> [time]
             char start_cmd[128];
             if (strcmp(mode_str, "TIMED") == 0) {
                 snprintf(start_cmd, sizeof(start_cmd), "%s %d %d %s %s %s %d\n", 
@@ -466,8 +466,8 @@ int main(void) {
             run_game_session();
             
             close(sock);
-            /* Server zabíjame iba ak sme ho spustili my a hra ešte nezačala.
-             * Po START už server nesmie byť závislý od klienta (P5).
+            /* Server zabijame iba ak sme ho spustili my a hra este nezacala
+             * Po START uz server nebude zavisli od klienta
              */
             if (server_pid > 0 && local_server_started && !game_started) {
                 kill(server_pid, SIGTERM);

@@ -1,42 +1,41 @@
 #pragma once
 
-/* ================= SERVER ================= */
-
-// Port, na ktorom server počúva
+//SERVER
+// Port, na ktorom server pocuva
 #define SERVER_PORT 5555
+//________________________________________________________
 
 
-/* ================= PRÍKAZY OD KLIENTA ================= */
-
-// štart hry (napr. "START WALLS STANDARD" alebo "START WRAP TIMED 60")
+//PRIKAZY OD KLIENTA
+// start hry (napr. "START WALLS STANDARD" alebo "START WRAP TIMED 60")
 #define CMD_START "START"
 
-// pohyb hráča (napr. "MOVE w")
+// pohyb hraca
 #define CMD_MOVE "MOVE"
 
-// korektné ukončenie klienta
+// korektne ukoncenie klienta
 #define CMD_QUIT "QUIT"
 
 // pozastavenie hry
 #define CMD_PAUSE "PAUSE"
 
-// pokračovanie v hre
+// pokracovanie v hre
 #define CMD_RESUME "RESUME"
+//________________________________________________________
 
 
-/* ================= ODPOVEDE SERVERA ================= */
-
-// obyčajná textová správa (debug / info)
+//ODPOVEDE SERVERA
+// obycajna textova sprava
 #define CMD_MSG "MSG"
 
-// herná mapa (ASCII výpis)
+// herna mapa (ASCII vypis)
 #define CMD_MAP "MAP"
 
-// skóre hráča (napr. "SCORE 12")
+// skore hraca
 #define CMD_SCORE "SCORE"
 
-// čas hry v sekundách (napr. "TIME 42")
+// cas hry v sekundach
 #define CMD_TIME "TIME"
 
-// koniec hry (kolízia)
+// koniec hry (kolizia)
 #define CMD_GAME_OVER "GAME_OVER"

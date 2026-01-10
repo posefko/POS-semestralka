@@ -3,7 +3,7 @@
 #include <time.h>
 
 /*
-  Rozmery mapy (budú sa meniť podľa výberu)
+  Rozmery mapy (budu sa menit podla vyberu)
 */
 extern int MAP_ROWS;
 extern int MAP_COLS;
@@ -22,20 +22,17 @@ typedef enum {
 } WorldType;
 
 /*
-  Herný režim
+  Herny rezim
 */
 typedef enum {
-    MODE_STANDARD,    // štandardný režim (10s timeout po smrti)
-    MODE_TIMED        // časový režim (hra končí po uplynulč času)
+    MODE_STANDARD,    // standardny rezim (10s timeout po smrti)
+    MODE_TIMED        // casovy rezim (hra konci po uplynutí casu)
 } GameMode;
 
-/*
-  Max d�ka hada � v tomto kroku pou��vame statick� pole,
-  aby sme nemuseli rie�i� malloc/free (jednoduch�ie, menej bugov).
-*/
+//Max dlzka hada
 #define MAX_SNAKE 256
 
-// Jednoduch� poz�cia v mrie�ke
+// pozicia v mriezke
 typedef struct {
     int x, y;
 } Pos;
@@ -43,7 +40,7 @@ typedef struct {
 /*
   Snake = "objekt" v C (struct).
   - parts[]: segmenty hada (0 je hlava)
-  - len: aktu�lna d�ka
+  - len: aktualna dlzka
   - dir: smer pohybu ('w','a','s','d')
   - alive/running: stav hry
 */
@@ -55,7 +52,7 @@ typedef struct {
 } Snake;
 
 /*
-  GameState = kompletný stav hry na SERVERI.
+  GameState = kompletny stav hry na serveri.
 */
 typedef struct {
     char board[MAX_ROWS][MAX_COLS];
@@ -79,15 +76,15 @@ typedef struct {
 void game_init(GameState* g, WorldType world, GameMode game_mode, int time_limit_sec,
                int rows, int cols, int has_obstacles);
 
-// Nastavenie smeru pohybu (vol� sa zo serverov�ho receive threadu)
+// Nastavenie smeru pohybu (vola sa zo serveroveho receive threadu)
 void game_set_dir(GameState* g, char dir);
 
 // Posun hry o 1 tick (server game loop)
 void game_step(GameState* g);
 
 /*
-  Vytvor� textov� mapu do bufferu (out).
-  Form�t:
+  Vytvori textovu mapu do bufferu (out).
+  Format:
     MAP\n
     <ROWS riadkov>\n
     ENDMAP\n
