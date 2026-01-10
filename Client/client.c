@@ -334,6 +334,10 @@ static void run_game_session(void) {
 int main(void) {
     struct sockaddr_in addr;
     pid_t server_pid = -1;
+
+    int local_server_started = 0; /* či sme tento server forkli my */
+    int game_started = 0;         /* či sme už poslali START */
+
     char server_ip[128] = "127.0.0.1";
     int server_port = SERVER_PORT;
 
@@ -347,16 +351,27 @@ int main(void) {
         
         /* P3: Spustenie lokálneho servera */
         if (choice == 1) {
-            server_pid = fork();
-            if (server_pid == 0) {
-                execl("./bin/server", "server", NULL);
-                perror("execl failed");
-                exit(1);
+            /* ak už lokálny server beží, nechceme spúšťať ďalší (bind na port by padol) */
+            if (server_pid > 0 && kill(server_pid, 0) == 0) {
+                local_server_started = 1;
+                game_started = 0;
             }
-            sleep(1);
+            else {
+                server_pid = fork();
+                if (server_pid == 0) {
+                    execl("./bin/server", "server", NULL);
+                    perror("execl failed");
+                    exit(1);
+                }
+                local_server_started = 1;
+                game_started = 0;
+                sleep(1);
+            }
+
             strcpy(server_ip, "127.0.0.1");
             server_port = SERVER_PORT;
         }
+
         
         /* P6: Pripojenie na vzdialený server */
         if (choice == 2) {
@@ -384,9 +399,10 @@ int main(void) {
             if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
                 perror("connect");
                 close(sock);
-                if (server_pid > 0) {
+                if (server_pid > 0 && local_server_started && !game_started) {
                     kill(server_pid, SIGTERM);
                     server_pid = -1;
+                    local_server_started = 0;
                 }
                 continue;
             }
@@ -398,9 +414,10 @@ int main(void) {
             int map_rows = 20, map_cols = 40;
             if (!show_size_menu(&map_rows, &map_cols)) {
                 close(sock);
-                if (server_pid > 0) {
+                if (server_pid > 0 && local_server_started && !game_started) {
                     kill(server_pid, SIGTERM);
                     server_pid = -1;
+                    local_server_started = 0;
                 }
                 continue;
             }
@@ -410,9 +427,10 @@ int main(void) {
             int time_limit = 0;
             if (!show_game_mode_menu(mode_str, &time_limit)) {
                 close(sock);
-                if (server_pid > 0) {
+                if (server_pid > 0 && local_server_started && !game_started) {
                     kill(server_pid, SIGTERM);
                     server_pid = -1;
+                    local_server_started = 0;
                 }
                 continue;
             }
@@ -422,9 +440,10 @@ int main(void) {
             int has_obstacles = 0;
             if (!show_world_menu(&world, &has_obstacles)) {
                 close(sock);
-                if (server_pid > 0) {
+                if (server_pid > 0 && local_server_started && !game_started) {
                     kill(server_pid, SIGTERM);
                     server_pid = -1;
+                    local_server_started = 0;
                 }
                 continue;
             }
@@ -441,13 +460,19 @@ int main(void) {
                          has_obstacles ? "OBS" : "NOOBS", mode_str);
             }
             send(sock, start_cmd, strlen(start_cmd), 0);
+            game_started = 1;
+
             
             run_game_session();
             
             close(sock);
-            if (server_pid > 0) {
+            /* Server zabíjame iba ak sme ho spustili my a hra ešte nezačala.
+             * Po START už server nesmie byť závislý od klienta (P5).
+             */
+            if (server_pid > 0 && local_server_started && !game_started) {
                 kill(server_pid, SIGTERM);
                 server_pid = -1;
+                local_server_started = 0;
             }
         }
     }

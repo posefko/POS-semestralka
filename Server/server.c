@@ -45,14 +45,12 @@ static void* recv_loop(void* arg) {
     while (1) {
         int r = (int)recv(ctx->client_fd, buf, sizeof(buf) - 1, 0);
         
-        /* P5: Korektné odpojenie */
+        /* P5: Korektné odpojenie
+         * Odpojenie klienta NESMIE okamžite ukončiť hru na serveri.
+         * Len si označíme stav a skončí recv thread. Hru ukončí hlavný game loop.
+         */
         if (r <= 0) {
             ctx->client_disconnected = 1;
-            if (ctx->g) {
-                pthread_mutex_lock(&ctx->g->mtx);
-                ctx->g->running = 0;
-                pthread_mutex_unlock(&ctx->g->mtx);
-            }
             break;
         }
 
@@ -155,30 +153,35 @@ static int start_server(void) {
 }
 
 int main(void) {
+    /* aby sa printf zobrazovali hneď aj pri spúšťaní cez iný proces */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     int server_fd = start_server();
     printf("Server listening on port %d\n", SERVER_PORT);
-    
+
     /* P2: Non-blocking accept */
     fcntl(server_fd, F_SETFL, O_NONBLOCK);
+
+    int exit_after_game = 0;
 
     while (1) {
         /* P4: Odmietnutie ďalších klientov */
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) {
-            usleep(100000);
+            sleep(100000);
             continue;
         }
-        
+
         printf("Client connected\n");
-        
+
         char out[8192];
         GameState g;
         memset(&g, 0, sizeof(g));  // Inicializuj na 0
-        
-        ClientCtx ctx = { 
-            .client_fd = client_fd, 
-            .g = &g, 
-            .state = STATE_WAITING, 
+
+        ClientCtx ctx = {
+            .client_fd = client_fd,
+            .g = &g,
+            .state = STATE_WAITING,
             .world = WORLD_WRAP,
             .client_disconnected = 0
         };
@@ -186,27 +189,49 @@ int main(void) {
         pthread_t th_recv;
         pthread_create(&th_recv, NULL, recv_loop, &ctx);
 
-        /* HLAVNÝ LOOP */
+        /* HLAVNÝ LOOP (čakáme na START alebo disconnect pred START) */
         while (!ctx.client_disconnected) {
             /* Čakáme na START */
             while (ctx.state == STATE_WAITING && !ctx.client_disconnected) {
-                usleep(10000);
+                sleep(10000);
             }
-            
-            if (ctx.client_disconnected) break;
 
-            printf("Starting game - World: %s, Mode: %s, Size: %dx%d, Obstacles: %s\n", 
-                   ctx.world == WORLD_WALLS ? "WALLS" : "WRAP",
-                   ctx.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
-                   ctx.map_rows, ctx.map_cols,
-                   ctx.has_obstacles ? "YES" : "NO");
+            if (ctx.client_disconnected) {
+                break; /* klient odišiel ešte pred START */
+            }
 
-            game_init(&g, ctx.world, ctx.game_mode, ctx.time_limit, ctx.map_rows, ctx.map_cols, ctx.has_obstacles);
+            printf("Starting game - World: %s, Mode: %s, Size: %dx%d, Obstacles: %s\n",
+                ctx.world == WORLD_WALLS ? "WALLS" : "WRAP",
+                ctx.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
+                ctx.map_rows, ctx.map_cols,
+                ctx.has_obstacles ? "YES" : "NO");
+
+            game_init(&g, ctx.world, ctx.game_mode, ctx.time_limit,
+                ctx.map_rows, ctx.map_cols, ctx.has_obstacles);
+
+            /*
+             * P5: ak klient odíde, server pokračuje.
+             * Aby server nebežal donekonečna bez klienta, ukončí hru po timeout-e.
+             */
+            time_t disconnected_at = 0;
+            const int DISCONNECT_TIMEOUT_SEC = 10;
 
             /* GAME LOOP */
             while (ctx.state == STATE_RUNNING || ctx.state == STATE_PAUSED) {
-                if (ctx.client_disconnected) break;
-                
+
+                /* P5 timeout bez klienta: nespôsobí okamžité ukončenie, ale korektne dobehne */
+                if (ctx.client_disconnected) {
+                    if (disconnected_at == 0) disconnected_at = time(NULL);
+                    if ((int)(time(NULL) - disconnected_at) >= DISCONNECT_TIMEOUT_SEC) {
+                        pthread_mutex_lock(&g.mtx);
+                        g.running = 0;
+                        pthread_mutex_unlock(&g.mtx);
+                    }
+                }
+                else {
+                    disconnected_at = 0;
+                }
+
                 pthread_mutex_lock(&g.mtx);
 
                 /* Kontrola časového limitu */
@@ -216,11 +241,16 @@ int main(void) {
                     if (elapsed >= g.time_limit_sec) {
                         g.running = 0;
                         ctx.state = STATE_GAMEOVER;
+
                         int n = snprintf(out, sizeof(out),
                             "%s\n%s %d\nMODE TIMED\n%s 0s\n%s\n*** CAS VYPRSAL ***\nENDMAP\n",
                             CMD_GAME_OVER, CMD_SCORE, g.score, CMD_TIME, CMD_MAP);
+
                         pthread_mutex_unlock(&g.mtx);
-                        send(client_fd, out, (size_t)n, 0);
+
+                        if (!ctx.client_disconnected) {
+                            send(client_fd, out, (size_t)n, 0);
+                        }
                         break;
                     }
                 }
@@ -233,15 +263,21 @@ int main(void) {
                 /* GAME OVER */
                 if (!g.running) {
                     ctx.state = STATE_GAMEOVER;
+
                     time_t now = time(NULL);
                     int elapsed = (int)(now - g.start_time) - g.total_pause_time;
+
                     int n = snprintf(out, sizeof(out),
                         "%s\n%s %d\nMODE %s\n%s %ds\n%s\n*** KONIEC HRY ***\nENDMAP\n",
                         CMD_GAME_OVER, CMD_SCORE, g.score,
                         g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED",
                         CMD_TIME, elapsed, CMD_MAP);
+
                     pthread_mutex_unlock(&g.mtx);
-                    send(client_fd, out, (size_t)n, 0);
+
+                    if (!ctx.client_disconnected) {
+                        send(client_fd, out, (size_t)n, 0);
+                    }
                     break;
                 }
 
@@ -251,7 +287,7 @@ int main(void) {
                     g.game_mode == MODE_STANDARD ? "STANDARD" : "TIMED");
 
                 time_t now = time(NULL);
-                int elapsed = g.paused ? 
+                int elapsed = g.paused ?
                     (int)(g.pause_start - g.start_time) - g.total_pause_time :
                     (int)(now - g.start_time) - g.total_pause_time;
 
@@ -259,25 +295,42 @@ int main(void) {
                     int remaining = g.time_limit_sec - elapsed;
                     if (remaining < 0) remaining = 0;
                     n += snprintf(out + n, sizeof(out) - n, "%s %ds LEFT\n", CMD_TIME, remaining);
-                } else {
+                }
+                else {
                     n += snprintf(out + n, sizeof(out) - n, "%s %ds\n", CMD_TIME, elapsed);
                 }
 
                 n += game_render_map(&g, out + n, (int)sizeof(out) - n);
                 pthread_mutex_unlock(&g.mtx);
 
-                send(client_fd, out, (size_t)n, 0);
-                usleep(150 * 1000);
+                if (!ctx.client_disconnected) {
+                    send(client_fd, out, (size_t)n, 0);
+                }
+
+                sleep(150 * 1000);
             }
 
-            pthread_mutex_destroy(&g.mtx);
-            ctx.state = STATE_WAITING;
-            printf("Game ended, waiting for next START...\n");
+            /* Po skončení hry: ukonči spojenie, aby recv thread bezpečne skončil */
+            shutdown(client_fd, SHUT_RDWR);
+
+            /* Chceme 1 server = 1 hra (P5: server zanikne po skončení hry) */
+            exit_after_game = 1;
+
+            /* Pozor: NEROB destroy mutexu, kým beží recv thread.
+               Najprv počkaj na recv thread. */
+            break; /* skonči HLAVNÝ LOOP pre tohto klienta */
         }
 
+        /* Bezpečné ukončenie vlákna a zdrojov */
         pthread_join(th_recv, NULL);
+
+        /* Mutex destroy až po join */
+        pthread_mutex_destroy(&g.mtx);
+
         close(client_fd);
         printf("Client disconnected\n");
+
+        if (exit_after_game) break;
     }
 
     close(server_fd);
