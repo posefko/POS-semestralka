@@ -127,6 +127,14 @@ static void* recv_loop(void* arg) {
     return NULL;
 }
 
+static void sleep_us(long us)
+{
+    struct timespec ts;
+    ts.tv_sec = us / 1000000;
+    ts.tv_nsec = (us % 1000000) * 1000;
+    nanosleep(&ts, NULL);
+}
+
 /*
  * Vytvorí server socket
  */
@@ -168,7 +176,7 @@ int main(void) {
         /* P4: Odmietnutie ďalších klientov */
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) {
-            sleep(100000);
+            sleep_us(100000);
             continue;
         }
 
@@ -193,7 +201,7 @@ int main(void) {
         while (!ctx.client_disconnected) {
             /* Čakáme na START */
             while (ctx.state == STATE_WAITING && !ctx.client_disconnected) {
-                sleep(10000);
+                sleep_us(10000);
             }
 
             if (ctx.client_disconnected) {
@@ -307,7 +315,7 @@ int main(void) {
                     send(client_fd, out, (size_t)n, 0);
                 }
 
-                sleep(150 * 1000);
+                sleep_us(150 * 1000);
             }
 
             /* Po skončení hry: ukonči spojenie, aby recv thread bezpečne skončil */
